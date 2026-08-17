@@ -1,4 +1,4 @@
-# FloatChat — Oceanographic Intelligence Platform
+ # FloatChat — Oceanographic Intelligence Platform
 
 > **AI-Powered Conversational Interface & Analytics Engine for ARGO Ocean Float Data**  
 > *Ministry of Earth Sciences | Smart India Hackathon (SIH)*
@@ -226,5 +226,5 @@ npm run build
 - Never commit real secrets or `.env` files to git repositories.
 - Keep `GROQ_API_KEY` protected in environment variables.
 - Production deployment enforces explicit origin CORS verification (`FRONTEND_URL`).
-- Server logs record error tracebacks internally while returning generic user-friendly messages to client applications.
+- Server logs record error tracebacks internally while returning the generic user-friendly messages to client applications.
 

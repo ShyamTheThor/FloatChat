@@ -69,8 +69,9 @@ INSERT INTO argo_profiles (
     %(pressure_dbar)s, %(depth_m)s, %(temperature)s, %(salinity)s,
     %(basin)s, %(profile_direction)s, %(data_mode)s, %(source_url)s
 )
-ON CONFLICT (float_id, cycle_number, pressure_dbar) DO NOTHING;
+ON CONFLICT (float_id, COALESCE(cycle_number, -1), COALESCE(pressure_dbar, -1.0)) DO NOTHING;
 """
+
 
 
 def upsert_profiles(

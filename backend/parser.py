@@ -27,11 +27,19 @@ from typing import Any
 
 def _pressure_to_depth(pressure_dbar: float, lat: float) -> float:
     """
-    Convert pressure (dbar) → depth (m) using the simplified Lewy formula.
+    Convert pressure (dbar) -> depth (m) using the simplified Leroy & Parthiot (1998) hydrostatic model.
 
-    Reference: Leroy & Parthiot (1998), simplified to 2nd order.
-    Accurate to ±0.5% for ocean depths 0–7000 m.
+    Formula:
+        depth_m = pressure_dbar * 0.9927 * (1.0 + 5.25e-3 * sin^2(lat))
+
+    Scientific context:
+        - Pressure is the raw primary oceanographic sensor measurement (decibars).
+        - Depth is a derived coordinate accounting for latitude-dependent gravitational variations.
+        - Units: pressure_dbar (dbar), lat (decimal degrees), depth_m (metres, positive downward).
+        - Expected accuracy: +/- 0.5% for ocean depth range 0 - 7000 m.
     """
+    if pressure_dbar is None or pressure_dbar < 0:
+        return 0.0
     sin2_lat = math.sin(math.radians(lat)) ** 2
     correction = 1.0 + 5.25e-3 * sin2_lat
     return round(pressure_dbar * 0.9927 * correction, 3)
@@ -99,7 +107,17 @@ def parse_argovis_profile(profile: dict[str, Any]) -> list[dict[str, Any]]:
         (lat/lon/timestamp).
     """
     profile_id = profile.get("_id", "")
-    float_id, cycle_number = _parse_id(profile_id)
+    parsed_float_id, parsed_cycle_number = _parse_id(profile_id)
+
+    # Prefer authoritative top-level source fields when present
+    raw_cycle = profile.get("cycle_number") if "cycle_number" in profile else profile.get("cycle")
+    raw_platform = profile.get("platform_number") if "platform_number" in profile else profile.get("platform")
+
+    float_id = str(raw_platform) if raw_platform is not None else parsed_float_id
+    try:
+        cycle_number = int(raw_cycle) if raw_cycle is not None else parsed_cycle_number
+    except (ValueError, TypeError):
+        cycle_number = parsed_cycle_number
 
     # ── Required spatial / temporal fields ───────────────────────────────
     coords = profile.get("geolocation", {}).get("coordinates", [])
@@ -110,6 +128,7 @@ def parse_argovis_profile(profile: dict[str, Any]) -> list[dict[str, Any]]:
     timestamp = profile.get("timestamp")
     if not timestamp:
         return []          # no time → skip entirely
+
 
     # ── Optional metadata ─────────────────────────────────────────────────
     basin             = profile.get("basin")

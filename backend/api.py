@@ -1,64 +1,136 @@
 """
 backend/api.py
 ==============
-FastAPI server serving as the bridge between the React frontend and the RAG pipeline.
+FastAPI server serving as the bridge between the React frontend and the ocean data pipeline.
 """
 
-from fastapi import FastAPI, HTTPException
+import os
+import logging
+from contextlib import asynccontextmanager
+from typing import Any, Dict, List, Optional
+from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
 
 from backend.rag import process_chat_query
+from backend.queries import get_dataset_metadata
 from backend.vector_store import init_vector_store
+from backend.schemas.query import AnalyticsSummary
 
-app = FastAPI(title="FloatChat API")
+# Configure logging
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logger = logging.getLogger("floatchat_api")
 
-# Configure CORS for the frontend (which usually runs on localhost:5173 for Vite)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifecycle manager: initialize vector store and metadata on startup."""
+    logger.info("Initializing FloatChat API services...")
+    try:
+        init_vector_store()
+    except Exception as e:
+        logger.warning(f"Vector store initialization deferred: {e}")
+    yield
+    logger.info("Shutting down FloatChat API services.")
+
+
+app = FastAPI(title="FloatChat API", version="1.0.0", lifespan=lifespan)
+
+# Configure CORS using environment variable
+frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
+origins = [frontend_url, "http://localhost:5173", "http://127.0.0.1:5173"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # allow all in dev
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
-@app.on_event("startup")
-def startup_event():
-    """Initialize vector DB on startup."""
-    init_vector_store()
 
 class ChatRequest(BaseModel):
     message: str
+
 
 class ChatResponse(BaseModel):
     answer: str
     data: List[Dict[str, Any]]
     plot_type: str
+    intent: Dict[str, Any]
+    analytics: AnalyticsSummary
+
+
+class DatasetMetadataResponse(BaseModel):
+    status: str
+    earliest_date: Optional[str] = None
+    latest_date: Optional[str] = None
+    total_observations: int = 0
+    total_floats: int = 0
+    total_profiles: int = 0
+    min_lat: Optional[float] = None
+    max_lat: Optional[float] = None
+    min_lon: Optional[float] = None
+    max_lon: Optional[float] = None
+    min_depth: Optional[float] = None
+    max_depth: Optional[float] = None
+
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint."""
+    return {"status": "ok", "service": "FloatChat API"}
+
+
+@app.get("/dataset/metadata", response_model=DatasetMetadataResponse)
+def get_metadata_endpoint():
+    """Return dataset spatial, temporal, and count metadata."""
+    try:
+        meta = get_dataset_metadata()
+        return DatasetMetadataResponse(**meta)
+    except Exception as e:
+        logger.error(f"Error fetching dataset metadata: {e}", exc_info=True)
+        return DatasetMetadataResponse(status="unavailable")
+
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(req: ChatRequest):
     """
-    Process a natural language query and return the LLM summary + raw data.
+    Process a natural language query and return LLM response, dataset payload,
+    intent visualization specs, and analytics summary.
     """
+    if not req.message or not req.message.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Message cannot be empty."
+        )
+
     try:
-        result = process_chat_query(req.message)
+        result = process_chat_query(req.message.strip())
         return ChatResponse(
             answer=result["answer"],
             data=result["data"],
-            plot_type=result["plot_type"]
+            plot_type=result["plot_type"],
+            intent=result.get("intent", {}),
+            analytics=result.get("analytics", AnalyticsSummary())
         )
     except ValueError as e:
-        # e.g., missing API key
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Configuration or validation error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The AI query service is temporarily unconfigured or unavailable."
+        )
     except Exception as e:
-        print("Error processing query:", e)
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+        logger.error(f"Unhandled error processing query: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while processing your ocean data request. Please try again."
+        )
 
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    host = os.getenv("API_HOST", "0.0.0.0")
+    port = int(os.getenv("API_PORT", "8000"))
+    uvicorn.run(app, host=host, port=port)
+

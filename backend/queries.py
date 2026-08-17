@@ -2,39 +2,19 @@
 backend/queries.py
 ==================
 Query functions for the argo_profiles table.
-
-These are the primary interface for the AI/ML / RAG layer.
-All functions return a list of dicts — simple to iterate in Python,
-easy to convert to a DataFrame if needed.
-
-Function signatures are intentionally simple:
-  - string dates in ISO-8601 format ("YYYY-MM-DD" or full ISO-8601)
-  - float degrees for lat/lon
-  - float metres for depth
-
-All queries include a LIMIT 10_000 safety cap to prevent runaway results;
-a warning is printed if the cap is hit.
-
-Usage example
--------------
-  from backend.queries import query_by_region, query_by_date_range, query_by_depth_band
-
-  rows = query_by_region(min_lat=5.0, max_lat=25.0, min_lon=60.0, max_lon=90.0)
-  df   = pd.DataFrame(rows)   # optional — works great with pandas
+Provides unified, parameterized SQL retrieval with dataset metadata extraction.
 """
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
 
 import psycopg2.extras
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from backend.db import get_connection
-
-# ── Shared helpers ─────────────────────────────────────────────────────────────
 
 _RESULT_LIMIT = 10_000
 
@@ -62,7 +42,147 @@ def _warn_if_capped(rows: list[dict], limit: int, query_name: str) -> None:
         )
 
 
-# ── Public query functions ─────────────────────────────────────────────────────
+def get_dataset_metadata(conn=None) -> dict[str, Any]:
+    """
+    Query PostgreSQL to determine dataset boundaries and statistics.
+    Returns earliest/latest timestamps, observation count, unique float count,
+    and spatial bounding box.
+    """
+    sql = """
+        SELECT 
+            MIN(timestamp) AS earliest_date,
+            MAX(timestamp) AS latest_date,
+            COUNT(*) AS total_observations,
+            COUNT(DISTINCT float_id) AS total_floats,
+            COUNT(DISTINCT (float_id || '_' || COALESCE(cycle_number::text, '0'))) AS total_profiles,
+            MIN(lat) AS min_lat,
+            MAX(lat) AS max_lat,
+            MIN(lon) AS min_lon,
+            MAX(lon) AS max_lon,
+            MIN(depth_m) AS min_depth,
+            MAX(depth_m) AS max_depth
+        FROM argo_profiles;
+    """
+    _conn = conn or get_connection()
+    try:
+        with _conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql)
+            res = cur.fetchone()
+            if res and res["total_observations"] > 0:
+                return {
+                    "earliest_date": str(res["earliest_date"])[:10] if res["earliest_date"] else None,
+                    "latest_date": str(res["latest_date"])[:10] if res["latest_date"] else None,
+                    "total_observations": int(res["total_observations"]),
+                    "total_floats": int(res["total_floats"]),
+                    "total_profiles": int(res["total_profiles"]),
+                    "min_lat": float(res["min_lat"]) if res["min_lat"] is not None else None,
+                    "max_lat": float(res["max_lat"]) if res["max_lat"] is not None else None,
+                    "min_lon": float(res["min_lon"]) if res["min_lon"] is not None else None,
+                    "max_lon": float(res["max_lon"]) if res["max_lon"] is not None else None,
+                    "min_depth": float(res["min_depth"]) if res["min_depth"] is not None else None,
+                    "max_depth": float(res["max_depth"]) if res["max_depth"] is not None else None,
+                    "status": "online"
+                }
+            return {
+                "earliest_date": None,
+                "latest_date": None,
+                "total_observations": 0,
+                "total_floats": 0,
+                "total_profiles": 0,
+                "status": "empty"
+            }
+    finally:
+        if conn is None:
+            _conn.close()
+
+
+def query_composite(
+    min_lat: Optional[float] = None,
+    max_lat: Optional[float] = None,
+    min_lon: Optional[float] = None,
+    max_lon: Optional[float] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    min_depth: Optional[float] = None,
+    max_depth: Optional[float] = None,
+    target_depth: Optional[float] = None,
+    depth_tolerance: float = 15.0,
+    parameter: str = "all",
+    float_id: Optional[str] = None,
+    limit: int = _RESULT_LIMIT,
+    conn=None,
+) -> list[dict[str, Any]]:
+    """
+    Execute a parameterized SQL query with dynamic WHERE clause matching
+    any combination of region, date range, depth range, and parameter requirements.
+    """
+    conditions: List[str] = ["1=1"]
+    params: Dict[str, Any] = {}
+
+    if min_lat is not None and max_lat is not None:
+        conditions.append("lat BETWEEN %(min_lat)s AND %(max_lat)s")
+        params["min_lat"] = min_lat
+        params["max_lat"] = max_lat
+
+    if min_lon is not None and max_lon is not None:
+        conditions.append("lon BETWEEN %(min_lon)s AND %(max_lon)s")
+        params["min_lon"] = min_lon
+        params["max_lon"] = max_lon
+
+    if start_date:
+        conditions.append("timestamp >= %(start_date)s::timestamptz")
+        params["start_date"] = start_date
+
+    if end_date:
+        conditions.append("timestamp <= %(end_date)s::timestamptz + INTERVAL '1 day' - INTERVAL '1 second'")
+        params["end_date"] = end_date
+
+    if target_depth is not None:
+        conditions.append("depth_m BETWEEN %(t_min)s AND %(t_max)s")
+        params["t_min"] = max(0.0, target_depth - depth_tolerance)
+        params["t_max"] = target_depth + depth_tolerance
+    elif min_depth is not None or max_depth is not None:
+        if min_depth is not None:
+            conditions.append("depth_m >= %(min_depth)s")
+            params["min_depth"] = min_depth
+        if max_depth is not None:
+            conditions.append("depth_m <= %(max_depth)s")
+            params["max_depth"] = max_depth
+
+    if parameter == "temperature":
+        conditions.append("temperature IS NOT NULL")
+    elif parameter == "salinity":
+        conditions.append("salinity IS NOT NULL")
+    elif parameter == "pressure":
+        conditions.append("pressure_dbar IS NOT NULL")
+
+    if float_id:
+        conditions.append("float_id = %(float_id)s")
+        params["float_id"] = float_id
+
+    where_clause = " AND ".join(conditions)
+    sql = f"""
+        SELECT {_SELECT_COLS}
+        FROM argo_profiles
+        WHERE {where_clause}
+        ORDER BY timestamp DESC, float_id, depth_m ASC
+        LIMIT {limit};
+    """
+
+    _conn = conn or get_connection()
+    try:
+        with _conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = _rows_to_dicts(cur.fetchall(), cur.description)
+    finally:
+        if conn is None:
+            _conn.close()
+
+    _warn_if_capped(rows, limit, "query_composite")
+    return rows
+
+
+# ── Backward-compatible convenience functions ─────────────────────────────────
 
 def query_by_region(
     min_lat: float,
@@ -71,49 +191,7 @@ def query_by_region(
     max_lon: float,
     conn=None,
 ) -> list[dict[str, Any]]:
-    """
-    Return all observation rows within a lat/lon bounding box.
-
-    Parameters
-    ----------
-    min_lat, max_lat : float
-        Latitude bounds in decimal degrees (−90 to +90).
-    min_lon, max_lon : float
-        Longitude bounds in decimal degrees (−180 to +180).
-
-    Returns
-    -------
-    list[dict]
-        Each dict has keys: id, float_id, cycle_number, lat, lon, timestamp,
-        pressure_dbar, depth_m, temperature, salinity, basin,
-        profile_direction, data_mode.
-
-    Example
-    -------
-    >>> rows = query_by_region(5.0, 25.0, 60.0, 90.0)
-    >>> print(f"{len(rows)} rows in Arabian Sea box")
-    """
-    sql = f"""
-        SELECT {_SELECT_COLS}
-        FROM   argo_profiles
-        WHERE  lat BETWEEN %(min_lat)s AND %(max_lat)s
-          AND  lon BETWEEN %(min_lon)s AND %(max_lon)s
-        ORDER  BY timestamp DESC, float_id, pressure_dbar
-        LIMIT  {_RESULT_LIMIT};
-    """
-    params = dict(min_lat=min_lat, max_lat=max_lat, min_lon=min_lon, max_lon=max_lon)
-
-    _conn = conn or get_connection()
-    try:
-        with _conn.cursor() as cur:
-            cur.execute(sql, params)
-            rows = _rows_to_dicts(cur.fetchall(), cur.description)
-    finally:
-        if conn is None:
-            _conn.close()
-
-    _warn_if_capped(rows, _RESULT_LIMIT, "query_by_region")
-    return rows
+    return query_composite(min_lat=min_lat, max_lat=max_lat, min_lon=min_lon, max_lon=max_lon, conn=conn)
 
 
 def query_by_date_range(
@@ -121,47 +199,7 @@ def query_by_date_range(
     end_date: str,
     conn=None,
 ) -> list[dict[str, Any]]:
-    """
-    Return all observation rows with timestamp in [start_date, end_date].
-
-    Parameters
-    ----------
-    start_date, end_date : str
-        ISO-8601 date or datetime strings.
-        Examples: "2023-01-01", "2023-01-01T00:00:00Z"
-        The range is inclusive on both ends.
-
-    Returns
-    -------
-    list[dict]
-        Same structure as query_by_region.
-
-    Example
-    -------
-    >>> rows = query_by_date_range("2023-01-01", "2023-01-07")
-    >>> print(f"{len(rows)} rows in first week of Jan 2023")
-    """
-    sql = f"""
-        SELECT {_SELECT_COLS}
-        FROM   argo_profiles
-        WHERE  timestamp BETWEEN %(start_date)s::timestamptz
-                              AND %(end_date)s::timestamptz + INTERVAL '1 day' - INTERVAL '1 second'
-        ORDER  BY timestamp DESC, float_id, pressure_dbar
-        LIMIT  {_RESULT_LIMIT};
-    """
-    params = dict(start_date=start_date, end_date=end_date)
-
-    _conn = conn or get_connection()
-    try:
-        with _conn.cursor() as cur:
-            cur.execute(sql, params)
-            rows = _rows_to_dicts(cur.fetchall(), cur.description)
-    finally:
-        if conn is None:
-            _conn.close()
-
-    _warn_if_capped(rows, _RESULT_LIMIT, "query_by_date_range")
-    return rows
+    return query_composite(start_date=start_date, end_date=end_date, conn=conn)
 
 
 def query_by_depth_band(
@@ -169,82 +207,14 @@ def query_by_depth_band(
     max_depth: float,
     conn=None,
 ) -> list[dict[str, Any]]:
-    """
-    Return all observation rows within a depth band [min_depth, max_depth] metres.
+    return query_composite(min_depth=min_depth, max_depth=max_depth, conn=conn)
 
-    Parameters
-    ----------
-    min_depth, max_depth : float
-        Depth bounds in metres (positive downward).
-        Examples: query_by_depth_band(0, 200) for the upper mixed layer.
-
-    Returns
-    -------
-    list[dict]
-        Same structure as query_by_region.
-
-    Example
-    -------
-    >>> rows = query_by_depth_band(0, 200)
-    >>> print(f"{len(rows)} rows in the upper 200 m")
-    """
-    sql = f"""
-        SELECT {_SELECT_COLS}
-        FROM   argo_profiles
-        WHERE  depth_m IS NOT NULL
-          AND  depth_m BETWEEN %(min_depth)s AND %(max_depth)s
-        ORDER  BY depth_m, timestamp DESC, float_id
-        LIMIT  {_RESULT_LIMIT};
-    """
-    params = dict(min_depth=min_depth, max_depth=max_depth)
-
-    _conn = conn or get_connection()
-    try:
-        with _conn.cursor() as cur:
-            cur.execute(sql, params)
-            rows = _rows_to_dicts(cur.fetchall(), cur.description)
-    finally:
-        if conn is None:
-            _conn.close()
-
-    _warn_if_capped(rows, _RESULT_LIMIT, "query_by_depth_band")
-    return rows
-
-
-# ── Quick demo / smoke test ────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("FloatChat — Query Demo")
-    print("=" * 60)
+    print("Testing get_dataset_metadata()...")
+    try:
+        meta = get_dataset_metadata()
+        print("Metadata:", meta)
+    except Exception as e:
+        print("Error fetching metadata:", e)
 
-    # 1. Region query: Arabian Sea
-    print("\n[1] query_by_region — Arabian Sea (lat 5–25, lon 55–80):")
-    rows = query_by_region(5.0, 25.0, 55.0, 80.0)
-    print(f"    → {len(rows)} rows")
-    if rows:
-        r = rows[0]
-        print(f"    Sample: float_id={r['float_id']} cycle={r['cycle_number']} "
-              f"lat={r['lat']:.3f} lon={r['lon']:.3f} "
-              f"depth={r['depth_m']}m temp={r['temperature']}°C "
-              f"sal={r['salinity']}psu ts={r['timestamp']}")
-
-    # 2. Date range query
-    print("\n[2] query_by_date_range — 2023-01-01 to 2023-01-07:")
-    rows = query_by_date_range("2023-01-01", "2023-01-07")
-    print(f"    → {len(rows)} rows")
-    if rows:
-        r = rows[0]
-        print(f"    Sample: float_id={r['float_id']} ts={r['timestamp']} "
-              f"temp={r['temperature']}°C sal={r['salinity']}psu")
-
-    # 3. Depth band query: upper mixed layer
-    print("\n[3] query_by_depth_band — 0 to 200 m (upper mixed layer):")
-    rows = query_by_depth_band(0.0, 200.0)
-    print(f"    → {len(rows)} rows")
-    if rows:
-        r = rows[0]
-        print(f"    Sample: float_id={r['float_id']} depth={r['depth_m']}m "
-              f"temp={r['temperature']}°C sal={r['salinity']}psu")
-
-    print("\n✓ All three query functions ran successfully.\n")

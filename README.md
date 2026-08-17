@@ -1,272 +1,230 @@
-# FloatChat — ARGO Ocean Data Pipeline
+# FloatChat — Oceanographic Intelligence Platform
 
-> **SIH25040 | Ministry of Earth Sciences**  
-> AI-Powered Conversational Interface for ARGO Ocean Float Data  
-> **Phase 0 & 1**: Setup · Data Pipeline · PostgreSQL Storage
+> **AI-Powered Conversational Interface & Analytics Engine for ARGO Ocean Float Data**  
+> *Ministry of Earth Sciences | Smart India Hackathon (SIH)*
 
 ---
 
 ## Table of Contents
-1. [What This Does](#what-this-does)
-2. [Prerequisites](#prerequisites)
-3. [Quick Start (under 10 minutes)](#quick-start)
-4. [Project Structure](#project-structure)
-5. [Running the Pipeline](#running-the-pipeline)
-6. [Running Queries](#running-queries)
-7. [For the AI/ML Teammate (RAG Layer)](#for-the-aiml-teammate-rag-layer)
-8. [Data Source Notes](#data-source-notes)
-9. [Schema Reference](#schema-reference)
+1. [System Overview](#system-overview)
+2. [Key Architectural Highlights](#key-architectural-highlights)
+3. [End-to-End System Architecture](#end-to-end-system-architecture)
+4. [Technology Stack](#technology-stack)
+5. [ARGO Data Pipeline & Validation](#argo-data-pipeline--validation)
+6. [Scientific Depth Calibration](#scientific-depth-calibration)
+7. [AI Query Intent Planner & RAG](#ai-query-intent-planner--rag)
+8. [Database Schema & Idempotent Upsert](#database-schema--idempotent-upsert)
+9. [API Reference](#api-reference)
+10. [Quick Start & Setup](#quick-start--setup)
+11. [Testing & Quality Gate](#testing--quality-gate)
+12. [Security Guidelines](#security-guidelines)
 
 ---
 
-## What This Does
+## System Overview
 
-This repository fetches real ARGO ocean float profiles from the **Argovis REST API**,
-parses them into a clean schema, validates them against physical oceanographic ranges,
-and loads them into a local **PostgreSQL** database.
+FloatChat is a scientifically defensible oceanographic intelligence platform designed to convert natural language queries into validated, deterministic SQL queries over multi-dimensional ARGO ocean float data.
 
-Three query functions (`query_by_region`, `query_by_date_range`, `query_by_depth_band`)
-are ready for the RAG/AI layer to call.
+Instead of allowing Large Language Models (LLMs) to directly emit or execute arbitrary raw SQL commands, FloatChat uses a strict multi-layer execution pipeline:
+
+```
+[User Natural Language Query]
+             │
+             ▼
+[ChromaDB Vector Retrieval (Domain Knowledge Metadata)]
+             │
+             ▼
+[Groq LLM + Pydantic QueryIntent Schema Parser]
+             │
+             ▼
+[Dataset Bounds & Business Rule Validation]
+             │
+             ▼
+[Deterministic Parameterized SQL Compiler]
+             │
+             ▼
+[PostgreSQL Database (argo_profiles)]
+             │
+             ▼
+[Server-Side Analytics Engine (Numpy Summary Metrics)]
+             │
+             ▼
+[Modern Oceanographic Intelligence Dashboard (React + Leaflet + Plotly)]
+```
 
 ---
 
-## Prerequisites
+## Key Architectural Highlights
 
-| Tool | Version | Install |
-|---|---|---|
-| Python | ≥ 3.11 | [python.org](https://python.org) |
-| Docker + Docker Compose | any recent | [docker.com](https://docker.com) |
-| Git | any | included on most systems |
+- **Deterministic Data Retrieval**: ARGO float measurements (temperature, salinity, pressure, depth) are fetched strictly from PostgreSQL via parameterized SQL queries compiled from validated Pydantic intent objects.
+- **Pydantic Intent Validation**: Ensures latitude (-90° to 90°), longitude (-180° to 180°), depth bands, and parameters are range-checked before query compilation.
+- **Dataset Coverage Awareness**: Dynamic `/dataset/metadata` endpoint checks PostgreSQL bounds so queries never rely on fragile relative dates ("last 7 days from today") for historical datasets.
+- **Scientific Defensibility**: Pressure (`pressure_dbar`) is preserved as the primary sensor measurement, while vertical depth (`depth_m`) is derived using the Leroy & Parthiot (1998) hydrostatic model.
+- **Server-Side Statistical Analytics**: Computes observation counts, float counts, mean/min/max metrics, and temporal bounds server-side for immediate display on KPI dashboard cards.
+- **Interactive Visualization Suite**:
+  - **Leaflet Map**: Marker deduplication by float profile, parameter-based color gradients, and hover popups.
+  - **Plotly Depth Profiles**: Dual-axis reversed depth plots for temperature & salinity.
+  - **Plotly Time Series**: Aggregated upper-layer (0–200m) thermal and salinity trends over time.
+  - **Plotly T-S Diagrams**: Temperature vs. Salinity scatter plots with depth color-bar encoding.
 
 ---
 
-## Quick Start
+## Technology Stack
 
+- **Backend**: FastAPI (Python 3.11+), Uvicorn, Pydantic v2, Psycopg2
+- **AI / RAG**: Groq (OpenAI-compatible client), ChromaDB (Persistent vector store)
+- **Database**: PostgreSQL 15 (Docker Compose containerized)
+- **Frontend**: React 19, Vite, React-Leaflet, React-Plotly.js, Lucide Icons
+- **Testing**: Pytest, TestClient, Httpx
+
+---
+
+## Scientific Depth Calibration
+
+Pressure measured in decibars ($p$) varies with depth ($z$) and latitude ($\phi$) due to ocean density stratification and gravitational variation.
+
+FloatChat uses the simplified 2nd-order Leroy & Parthiot (1998) hydrostatic conversion:
+
+$$\text{depth\_m} = p \times 0.9927 \times \left(1.0 + 5.25 \times 10^{-3} \sin^2\phi\right)$$
+
+- **Input**: `pressure_dbar` (dbar), `lat` (decimal degrees)
+- **Output**: `depth_m` (metres, positive downward)
+- **Accuracy**: $\pm 0.5\%$ across ocean depths 0–7000 m
+
+---
+
+## Database Schema & Idempotent Upsert
+
+Table: `argo_profiles`
+
+```sql
+CREATE TABLE IF NOT EXISTS argo_profiles (
+    id                BIGSERIAL PRIMARY KEY,
+    float_id          VARCHAR(20) NOT NULL,
+    cycle_number      INTEGER,
+    lat               DOUBLE PRECISION NOT NULL CONSTRAINT chk_lat CHECK (lat BETWEEN -90.0 AND 90.0),
+    lon               DOUBLE PRECISION NOT NULL CONSTRAINT chk_lon CHECK (lon BETWEEN -180.0 AND 180.0),
+    timestamp         TIMESTAMPTZ NOT NULL,
+    pressure_dbar     REAL CONSTRAINT chk_pressure CHECK (pressure_dbar IS NULL OR pressure_dbar >= 0.0),
+    depth_m           REAL CONSTRAINT chk_depth CHECK (depth_m IS NULL OR depth_m >= 0.0),
+    temperature       REAL CONSTRAINT chk_temp CHECK (temperature IS NULL OR (temperature >= -2.5 AND temperature <= 40.0)),
+    salinity          REAL CONSTRAINT chk_sal CHECK (salinity IS NULL OR (salinity >= 0.0 AND salinity <= 45.0)),
+    basin             INTEGER,
+    profile_direction CHAR(1),
+    data_mode         CHAR(1),
+    source_url        TEXT
+);
+
+-- Idempotent NULL-safe unique index
+CREATE UNIQUE INDEX IF NOT EXISTS idx_uq_profile_level 
+    ON argo_profiles (float_id, COALESCE(cycle_number, -1), COALESCE(pressure_dbar, -1.0));
+```
+
+---
+
+## API Reference
+
+### 1. `GET /health`
+Returns system status.
+```json
+{
+  "status": "ok",
+  "service": "FloatChat API"
+}
+```
+
+### 2. `GET /dataset/metadata`
+Returns spatial, temporal, and count metadata from PostgreSQL.
+```json
+{
+  "status": "online",
+  "earliest_date": "2023-01-01",
+  "latest_date": "2023-01-07",
+  "total_observations": 1284,
+  "total_floats": 23,
+  "total_profiles": 48
+}
+```
+
+### 3. `POST /chat`
+Accepts natural language query and returns LLM text summary, visualization data payload, query intent specs, and analytics metrics.
+
+Request:
+```json
+{
+  "message": "Show me salinity in the Arabian Sea"
+}
+```
+
+---
+
+## Quick Start & Setup
+
+### 1. Environment Configuration
+Copy environment configuration template:
 ```bash
-# 1. Clone and enter the repo
-git clone <repo-url>
-cd OCEAN
-
-# 2. Set up Python virtual environment
-python3.11 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-
-# 3. Install dependencies
-pip install -e .
-
-# 4. Copy environment config (edit if you change ports/passwords)
 cp .env.example .env
-
-# 5. Start PostgreSQL (runs in background)
-docker compose up -d
-
-# 6. Wait ~5 seconds for Postgres to be ready, then fetch sample data
-python scripts/fetch_sample_data.py --days 7
-
-# 7. Inspect the data structure (optional but recommended)
-python scripts/inspect_data.py
-
-# 8. Run the ETL — parse, validate, and load into DB
-python -m backend.load_data
-
-# 9. Verify with a sample query
-python backend/queries.py
 ```
-
-Total time: **~5–8 minutes** (mostly waiting for the Argovis API and Docker pull).
-
----
-
-## Project Structure
-
-```
-OCEAN/
-├── .env.example              # Copy to .env — DB credentials
-├── .gitignore
-├── docker-compose.yml        # Local PostgreSQL 15
-├── pyproject.toml            # Python dependencies
-├── README.md
-│
-├── data/
-│   ├── raw/                  # Raw Argovis JSON files (gitignored)
-│   └── sample/               # Small curated samples (committed)
-│
-├── backend/
-│   ├── __init__.py
-│   ├── create_tables.sql     # PostgreSQL DDL
-│   ├── db.py                 # Connection + upsert helpers
-│   ├── parser.py             # Argovis JSON → clean rows
-│   ├── validate.py           # Physical range checks
-│   ├── load_data.py          # ETL orchestrator (CLI entry point)
-│   └── queries.py            # Three query functions for RAG layer
-│
-├── docs/
-│   ├── data_dictionary.md    # Every source field documented
-│   └── schema.md             # Target DB schema (formal DDL + rationale)
-│
-└── scripts/
-    ├── fetch_sample_data.py  # Download from Argovis API
-    └── inspect_data.py       # Print field stats from raw files
-```
-
----
-
-## Running the Pipeline
-
-### 1 — Start PostgreSQL
-
-```bash
-docker compose up -d
-# Verify it's healthy:
-docker compose ps
-```
-
-Expected output:
-```
-NAME            STATUS
-floatchat_db    running (healthy)
-```
-
-### 2 — Fetch Sample Data
-
-```bash
-python scripts/fetch_sample_data.py --days 7 --start 2023-01-01
-```
-
-Downloads ~50–300 Indian Ocean profiles per day.  
-Files land in `data/raw/argovis_indian_ocean_YYYY-MM-DD.json`.
-
-Optional: set `ARGOVIS_TOKEN=your_token` in `.env` if you register at argovis.colorado.edu.
-
-### 3 — Inspect Data (optional)
-
-```bash
-python scripts/inspect_data.py
-```
-
-Prints variable names, units, lat/lon range, temperature/salinity/pressure statistics,
-and a 5-level sample profile.
-
-### 4 — Run the ETL
-
-```bash
-# Normal run (loads all rows including flagged outliers)
-python -m backend.load_data
-
-# Drop physically implausible rows (strict mode)
-python -m backend.load_data --drop-flagged
-
-# Dry run — parse + validate without touching the DB
-python -m backend.load_data --dry-run
-```
-
-### 5 — Re-runs
-
-The ETL is **idempotent** — re-running it never duplicates rows.  
-The DB uses `ON CONFLICT (float_id, cycle_number, pressure_dbar) DO NOTHING`.
-
----
-
-## Running Queries
-
-```python
-from backend.queries import query_by_region, query_by_date_range, query_by_depth_band
-
-# All observations in the Arabian Sea
-rows = query_by_region(min_lat=5.0, max_lat=25.0, min_lon=55.0, max_lon=80.0)
-
-# All observations in the first week of January 2023
-rows = query_by_date_range("2023-01-01", "2023-01-07")
-
-# All observations in the upper mixed layer (0–200 m)
-rows = query_by_depth_band(0.0, 200.0)
-
-# Each function returns a list of dicts — convert to DataFrame easily:
-import pandas as pd
-df = pd.DataFrame(rows)
-print(df[["float_id", "lat", "lon", "depth_m", "temperature", "salinity", "timestamp"]].head())
-```
-
-Run the built-in demo:
-
-```bash
-python backend/queries.py
-```
-
----
-
-## For the AI/ML Teammate (RAG Layer)
-
-### What's Ready
-
-| Item | Location | Notes |
-|---|---|---|
-| PostgreSQL schema | `docs/schema.md` | Table `argo_profiles`, all columns defined |
-| Query functions | `backend/queries.py` | Import and call directly |
-| DB connection | `backend/db.py → get_connection()` | Uses `.env` credentials |
-
-### Environment Variables You Need
-
-```bash
+Ensure `.env` contains:
+```ini
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
 POSTGRES_USER=floatchat
 POSTGRES_PASSWORD=floatchat_dev
 POSTGRES_DB=argo
+
+FRONTEND_URL=http://localhost:5173
+VITE_API_BASE_URL=http://localhost:8000
+GROQ_API_KEY=your_groq_api_key_here
 ```
 
-### Query Function Signatures
-
-```python
-# Returns List[dict] — keys: id, float_id, cycle_number, lat, lon, timestamp,
-#                            pressure_dbar, depth_m, temperature, salinity,
-#                            basin, profile_direction, data_mode
-
-query_by_region(min_lat, max_lat, min_lon, max_lon) → List[dict]
-query_by_date_range(start_date: str, end_date: str) → List[dict]   # ISO-8601
-query_by_depth_band(min_depth: float, max_depth: float) → List[dict]  # metres
+### 2. Start PostgreSQL Database
+```bash
+docker compose up -d
 ```
 
-All functions hard-cap at **10,000 rows** with a stderr warning — narrow your
-parameters if you hit this limit.
+### 3. Install Python Dependencies & Run ETL
+```bash
+python3 -m pip install -e .
+python3 -m backend.load_data
+```
 
-### Useful Bounding Boxes (Indian Ocean)
+### 4. Start FastAPI Backend
+```bash
+python3 backend/api.py
+```
 
-| Region | min_lat | max_lat | min_lon | max_lon |
-|---|---|---|---|---|
-| Arabian Sea | 5 | 25 | 55 | 80 |
-| Bay of Bengal | 5 | 22 | 80 | 100 |
-| Full Indian Ocean | −10 | 25 | 40 | 105 |
-| South Indian Ocean | −60 | −10 | 20 | 120 |
+### 5. Start React Frontend
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173` in your browser.
 
 ---
 
-## Data Source Notes
+## Testing & Quality Gate
 
-**Primary source**: [Argovis](https://argovis.colorado.edu/) REST API  
-- Endpoint: `GET https://argovis-api.colorado.edu/argo`  
-- Floats sourced from INCOIS (Indian National Centre for Ocean Information Services)  
-- Data modes: `R`=real-time, `A`=adjusted, `D`=delayed-mode (highest quality)
+Run automated Pytest test suite:
+```bash
+python3 -m pytest tests/
+```
 
-**Alternative (manual)**: INCOIS/GDAC FTP mirror  
-- `ftp://ftp.ifremer.fr/ifremer/argo/dac/incois/`  
-- See `scripts/fetch_sample_data.py` for NetCDF download instructions
+Run frontend linting and build validation:
+```bash
+cd frontend
+npm run lint
+npm run build
+```
 
 ---
 
-## Schema Reference
+## Security Guidelines
 
-See [`docs/schema.md`](docs/schema.md) for the full DDL and [`docs/data_dictionary.md`](docs/data_dictionary.md) for field-level source mapping.
+- Never commit real secrets or `.env` files to git repositories.
+- Keep `GROQ_API_KEY` protected in environment variables.
+- Production deployment enforces explicit origin CORS verification (`FRONTEND_URL`).
+- Server logs record error tracebacks internally while returning generic user-friendly messages to client applications.
 
-Core table: **`argo_profiles`**
-
-| Column | Type | Description |
-|---|---|---|
-| `float_id` | VARCHAR(20) | ARGO platform ID |
-| `cycle_number` | INTEGER | Dive cycle number |
-| `lat`, `lon` | DOUBLE PRECISION | Decimal degrees |
-| `timestamp` | TIMESTAMPTZ | UTC observation time |
-| `pressure_dbar` | REAL | Pressure in decibars |
-| `depth_m` | REAL | Depth in metres (derived) |
-| `temperature` | REAL | °C (NULL if bad/missing) |
-| `salinity` | REAL | psu (NULL if bad/missing) |

@@ -24,6 +24,12 @@ dependencies = [
     "python-dotenv>=1.0",
     # Progress display
     "tqdm>=4.66",
+    # Backend API & RAG
+    "fastapi>=0.110.0",
+    "uvicorn>=0.27.0",
+    "openai>=1.14.0",
+    "pydantic>=2.6.0",
+    "chromadb>=0.4.24",
 ]
 
 [project.optional-dependencies]

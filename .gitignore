@@ -1,0 +1,52 @@
+# ── Python ──────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+ENV/
+
+# ── Virtual environments ─────────────────────────────────────────────────
+.venv/
+venv/
+.env
+
+# ── Type checking / linting ──────────────────────────────────────────────
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# ── Jupyter ──────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── Ocean data files (can be large / proprietary) ────────────────────────
+data/raw/*.nc
+data/raw/*.json
+data/raw/*.csv
+data/raw/*.gz
+
+# Keep the sample folder contents in git (small curated files only)
+!data/sample/
+
+# ── IDE ──────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# ── Docker / Postgres volumes ─────────────────────────────────────────────
+pgdata/
+
+# ── Secrets ──────────────────────────────────────────────────────────────
+.env
+*.pem
+*.key

@@ -5,9 +5,15 @@ FastAPI server serving as the bridge between the React frontend and the ocean da
 """
 
 import os
+import sys
 import logging
+from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
+
+# Ensure project root is on sys.path when executed directly as `python backend/api.py`
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -74,6 +80,19 @@ class DatasetMetadataResponse(BaseModel):
     max_lon: Optional[float] = None
     min_depth: Optional[float] = None
     max_depth: Optional[float] = None
+
+
+@app.get("/")
+def root():
+    """Root status and navigation endpoint."""
+    return {
+        "service": "FloatChat Oceanographic Intelligence API",
+        "version": "1.0.0",
+        "status": "online",
+        "docs": "/docs",
+        "health": "/health",
+        "frontend": "http://localhost:5173"
+    }
 
 
 @app.get("/health")

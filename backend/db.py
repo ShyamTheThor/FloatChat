@@ -49,6 +49,35 @@ def create_tables(conn: psycopg2.extensions.connection | None = None) -> None:
     _conn = conn or get_connection()
     try:
         with _conn.cursor() as cur:
+            # Create table first
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS argo_profiles (
+                    id                BIGSERIAL        PRIMARY KEY,
+                    float_id          VARCHAR(20)      NOT NULL,
+                    cycle_number      INTEGER,
+                    lat               DOUBLE PRECISION NOT NULL CONSTRAINT chk_lat CHECK (lat BETWEEN -90.0 AND 90.0),
+                    lon               DOUBLE PRECISION NOT NULL CONSTRAINT chk_lon CHECK (lon BETWEEN -180.0 AND 180.0),
+                    timestamp         TIMESTAMPTZ      NOT NULL,
+                    pressure_dbar     REAL             CONSTRAINT chk_pressure CHECK (pressure_dbar IS NULL OR pressure_dbar >= 0.0),
+                    depth_m           REAL             CONSTRAINT chk_depth CHECK (depth_m IS NULL OR depth_m >= 0.0),
+                    temperature       REAL             CONSTRAINT chk_temp CHECK (temperature IS NULL OR (temperature >= -2.5 AND temperature <= 40.0)),
+                    salinity          REAL             CONSTRAINT chk_sal CHECK (salinity IS NULL OR (salinity >= 0.0 AND salinity <= 45.0)),
+                    basin             INTEGER,
+                    profile_direction CHAR(1),
+                    data_mode         CHAR(1),
+                    source_url        TEXT
+                );
+            """)
+            # Deduplicate any pre-existing duplicate rows from prior runs before index creation
+            cur.execute("""
+                DELETE FROM argo_profiles a
+                USING argo_profiles b
+                WHERE a.id < b.id
+                  AND a.float_id = b.float_id
+                  AND a.timestamp = b.timestamp
+                  AND COALESCE(a.pressure_dbar, -1.0) = COALESCE(b.pressure_dbar, -1.0);
+            """)
+            # Now run full DDL with unique index
             cur.execute(ddl)
         _conn.commit()
         print("✓ Tables and indexes ready.")
@@ -69,7 +98,7 @@ INSERT INTO argo_profiles (
     %(pressure_dbar)s, %(depth_m)s, %(temperature)s, %(salinity)s,
     %(basin)s, %(profile_direction)s, %(data_mode)s, %(source_url)s
 )
-ON CONFLICT (float_id, COALESCE(cycle_number, -1), COALESCE(pressure_dbar, -1.0)) DO NOTHING;
+ON CONFLICT (float_id, timestamp, COALESCE(pressure_dbar, -1.0)) DO NOTHING;
 """
 
 

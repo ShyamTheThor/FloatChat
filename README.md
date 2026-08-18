@@ -79,17 +79,16 @@ Instead of allowing Large Language Models (LLMs) to directly emit or execute arb
 
 ---
 
-## Scientific Depth Calibration
+## Scientific Depth Calibration & Units
 
-Pressure measured in decibars ($p$) varies with depth ($z$) and latitude ($\phi$) due to ocean density stratification and gravitational variation.
+- **Primary Measurement**: Pressure ($p$, in decibars / `dbar`), measured directly by CTD sensors on ARGO profiling floats.
+- **Derived Depth**: Vertical depth ($z$, in metres / `m`, positive downward) is estimated using the 2nd-order Leroy & Parthiot (1998) hydrostatic model:
 
-FloatChat uses the simplified 2nd-order Leroy & Parthiot (1998) hydrostatic conversion:
+$$\text{depth\_m} \approx p \times 0.9927 \times \left(1.0 + 5.25 \times 10^{-3} \sin^2\phi\right)$$
 
-$$\text{depth\_m} = p \times 0.9927 \times \left(1.0 + 5.25 \times 10^{-3} \sin^2\phi\right)$$
-
-- **Input**: `pressure_dbar` (dbar), `lat` (decimal degrees)
-- **Output**: `depth_m` (metres, positive downward)
-- **Accuracy**: $\pm 0.5\%$ across ocean depths 0–7000 m
+- **Uncertainty**: The hydrostatic approximation provides an accuracy of approximately $\pm 0.5\%$ across standard ocean depth columns (0–7000 m). Raw `pressure_dbar` is always retained in the database alongside derived `depth_m` to preserve data lineage.
+- **Salinity**: Practical Salinity Scale 1978 (PSS-78), dimensionless, reported using standard oceanographic `psu` notation.
+- **Temperature**: In-situ seawater temperature reported in degrees Celsius (`°C`, ITS-90 standard).
 
 ---
 
@@ -147,7 +146,7 @@ Returns spatial, temporal, and count metadata from PostgreSQL.
 ```
 
 ### 3. `POST /chat`
-Accepts natural language query and returns LLM text summary, visualization data payload, query intent specs, and analytics metrics.
+Accepts natural language query and returns text summary, visualization data payload, query intent specs, and analytics metrics.
 
 Request:
 ```json
@@ -155,6 +154,15 @@ Request:
   "message": "Show me salinity in the Arabian Sea"
 }
 ```
+
+---
+
+## Offline Deterministic Fallback & DEMO MODE
+
+FloatChat includes an **offline deterministic semantic planner** in `backend/planner.py`:
+- **Offline / Presentation Mode**: Set `DEMO_MODE=true` in `.env` to execute queries with deterministic domain parsing and structured summary generation locally without external LLM API calls.
+- **Live Mode**: Calls the Groq LLM API (`openai/gpt-oss-120b`), automatically falling back to the deterministic planner if an API key expires, encounters rate limits, or network connectivity is interrupted.
+- **Database Safety**: Both live and demo modes compile into identical parameterized SQL queries against PostgreSQL.
 
 ---
 
@@ -176,6 +184,7 @@ POSTGRES_DB=argo
 FRONTEND_URL=http://localhost:5173
 VITE_API_BASE_URL=http://localhost:8000
 GROQ_API_KEY=your_groq_api_key_here
+DEMO_MODE=false
 ```
 
 ### 2. Start PostgreSQL Database
@@ -209,7 +218,12 @@ Open `http://localhost:5173` in your browser.
 
 Run automated Pytest test suite:
 ```bash
-python3 -m pytest tests/
+python3 -m pytest tests/ -v
+```
+
+Run domain query benchmark (40 curated oceanographic test questions):
+```bash
+python3 scripts/eval_planner.py
 ```
 
 Run frontend linting and build validation:
@@ -227,4 +241,5 @@ npm run build
 - Keep `GROQ_API_KEY` protected in environment variables.
 - Production deployment enforces explicit origin CORS verification (`FRONTEND_URL`).
 - Server logs record error tracebacks internally while returning the generic user-friendly messages to client applications.
+
 

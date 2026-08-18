@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { 
+import {
   Waves, Send, Map as MapIcon, LineChart, Loader2, RotateCcw, Download,
   Compass, Info
 } from 'lucide-react';
@@ -20,9 +20,9 @@ const SUGGESTED_QUERIES = [
 
 function App() {
   const [messages, setMessages] = useState([
-    { 
-      role: 'bot', 
-      content: "Welcome to FloatChat Oceanographic Intelligence Platform. Ask any query about ARGO float observations in the Indian Ocean." 
+    {
+      role: 'bot',
+      content: "Welcome to FloatChat Oceanographic Intelligence Platform. Ask any query about ARGO float observations in the Indian Ocean."
     }
   ]);
   const [input, setInput] = useState('');
@@ -88,13 +88,21 @@ function App() {
       });
 
       if (!response.ok) {
-        throw new Error(`API response status: ${response.status}`);
+        let detailMsg = "Ocean data service is temporarily unavailable. Please verify backend API connectivity.";
+        try {
+          const errData = await response.json();
+          if (errData?.detail) detailMsg = errData.detail;
+        } catch {
+          // Keep default message if response body is non-JSON
+        }
+        setMessages(prev => [...prev, { role: 'bot', content: detailMsg }]);
+        return;
       }
 
       const resData = await response.json();
-      
+
       setMessages(prev => [...prev, { role: 'bot', content: resData.answer }]);
-      
+
       if (resData.data) {
         setData(resData.data);
       }
@@ -109,10 +117,10 @@ function App() {
       }
 
     } catch (error) {
-      console.error(error);
-      setMessages(prev => [...prev, { 
-        role: 'bot', 
-        content: "Ocean data service is temporarily unavailable. Please verify backend API connectivity." 
+      console.error('Fetch error:', error);
+      setMessages(prev => [...prev, {
+        role: 'bot',
+        content: "Cannot connect to FloatChat backend API. Please ensure the server is running."
       }]);
     } finally {
       setIsLoading(false);
@@ -125,9 +133,9 @@ function App() {
   };
 
   const handleReset = () => {
-    setMessages([{ 
-      role: 'bot', 
-      content: "Session reset. Enter a query to analyze ARGO float data." 
+    setMessages([{
+      role: 'bot',
+      content: "Session reset. Enter a query to analyze ARGO float data."
     }]);
     setData([]);
     setIntent(null);
@@ -260,13 +268,13 @@ function App() {
         <section className="vis-viewport">
           <div className="vis-toolbar">
             <div className="tab-group">
-              <button 
+              <button
                 className={`tab-btn ${activeVis === 'map' ? 'active' : ''}`}
                 onClick={() => setActiveVis('map')}
               >
                 <MapIcon size={16} /> Interactive Map
               </button>
-              <button 
+              <button
                 className={`tab-btn ${activeVis === 'chart' ? 'active' : ''}`}
                 onClick={() => setActiveVis('chart')}
               >
@@ -290,7 +298,7 @@ function App() {
             ) : activeVis === 'map' ? (
               <MapViewer data={data} parameter={intent?.parameter} />
             ) : (
-              <ChartViewer data={data} plotType={plotType} />
+              <ChartViewer data={data} plotType={plotType} parameter={intent?.parameter || 'all'} />
             )}
           </div>
         </section>
@@ -306,19 +314,19 @@ function App() {
 
         <div className="kpi-card">
           <span className="kpi-title">Mean Temp</span>
-          <span className="kpi-value">{analytics?.temp_mean !== null && analytics?.temp_mean !== undefined ? `${analytics.temp_mean} °C` : '--'}</span>
-          <span className="kpi-sub">{analytics?.temp_min !== null ? `${analytics.temp_min} to ${analytics.temp_max} °C` : '--'}</span>
+          <span className="kpi-value">{analytics?.temp_mean != null ? `${analytics.temp_mean} °C` : '--'}</span>
+          <span className="kpi-sub">{analytics?.temp_min != null ? `${analytics.temp_min} to ${analytics.temp_max} °C` : '--'}</span>
         </div>
 
         <div className="kpi-card">
           <span className="kpi-title">Mean Salinity</span>
-          <span className="kpi-value">{analytics?.sal_mean !== null && analytics?.sal_mean !== undefined ? `${analytics.sal_mean} psu` : '--'}</span>
-          <span className="kpi-sub">{analytics?.sal_min !== null ? `${analytics.sal_min} to ${analytics.sal_max} psu` : '--'}</span>
+          <span className="kpi-value">{analytics?.sal_mean != null ? `${analytics.sal_mean} psu` : '--'}</span>
+          <span className="kpi-sub">{analytics?.sal_min != null ? `${analytics.sal_min} to ${analytics.sal_max} psu` : '--'}</span>
         </div>
 
         <div className="kpi-card">
           <span className="kpi-title">Depth Bounds</span>
-          <span className="kpi-value">{analytics?.depth_min !== null && analytics?.depth_min !== undefined ? `${analytics.depth_min}–${analytics.depth_max} m` : '--'}</span>
+          <span className="kpi-value">{analytics?.depth_min != null ? `${analytics.depth_min}–${analytics.depth_max} m` : '--'}</span>
           <span className="kpi-sub">Vertical column</span>
         </div>
 

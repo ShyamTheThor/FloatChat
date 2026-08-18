@@ -410,3 +410,71 @@
   color: var(--text-muted);
 }
 
+/* ── Responsive: Tablet ──────────────────────────────────────────────────── */
+@media (max-width: 1024px) {
+  .main-viewport {
+    flex-direction: column;
+  }
+
+  .sidebar-panel {
+    width: 100%;
+    max-height: 40vh;
+    border-right: none;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .vis-viewport {
+    min-height: 50vh;
+  }
+
+  .nav-status .meta-info {
+    display: none;
+  }
+}
+
+/* ── Responsive: Mobile ──────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .top-nav {
+    padding: 0.5rem 0.75rem;
+    height: auto;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .brand-subtitle {
+    display: none;
+  }
+
+  .nav-status {
+    order: 3;
+    width: 100%;
+  }
+
+  .sidebar-panel {
+    max-height: 35vh;
+  }
+
+  .chat-bubble {
+    font-size: 0.82rem;
+    padding: 0.65rem 0.85rem;
+  }
+
+  .suggested-queries {
+    padding: 0.5rem 0.75rem;
+  }
+
+  .suggest-pill {
+    font-size: 0.72rem;
+  }
+
+  .kpi-bar {
+    grid-template-columns: repeat(2, 1fr);
+    height: auto;
+    padding: 0.5rem 0.75rem;
+  }
+
+  .interp-grid {
+    grid-template-columns: 1fr;
+  }
+}
+

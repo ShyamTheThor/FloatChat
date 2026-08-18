@@ -31,3 +31,12 @@ def test_query_intent_invalid_lat_bounds():
 def test_query_intent_invalid_depth_bounds():
     with pytest.raises(ValidationError):
         QueryIntent(min_depth=500.0, max_depth=100.0)
+
+
+def test_deterministic_planner_benchmark():
+    """Verify that deterministic planner achieves >= 95% accuracy across representative queries."""
+    from scripts.eval_planner import run_benchmark
+    results = run_benchmark()
+    assert results["overall_accuracy"] >= 95.0
+    assert results["param_acc"] == 100.0
+    assert results["region_acc"] == 100.0

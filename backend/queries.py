@@ -63,8 +63,9 @@ def get_dataset_metadata(conn=None) -> dict[str, Any]:
             MAX(depth_m) AS max_depth
         FROM argo_profiles;
     """
-    _conn = conn or get_connection()
+    _conn = None
     try:
+        _conn = conn or get_connection()
         with _conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(sql)
             res = cur.fetchone()
@@ -91,8 +92,18 @@ def get_dataset_metadata(conn=None) -> dict[str, Any]:
                 "total_profiles": 0,
                 "status": "empty"
             }
+    except Exception as e:
+        print(f"[queries.py] get_dataset_metadata connection/query error: {e}", file=sys.stderr)
+        return {
+            "earliest_date": None,
+            "latest_date": None,
+            "total_observations": 0,
+            "total_floats": 0,
+            "total_profiles": 0,
+            "status": "unavailable"
+        }
     finally:
-        if conn is None:
+        if _conn is not None and conn is None:
             _conn.close()
 
 

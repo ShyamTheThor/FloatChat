@@ -30,9 +30,10 @@ CREATE TABLE IF NOT EXISTS argo_profiles (
     source_url        TEXT             -- original NetCDF URL on GDAC/INCOIS
 );
 
--- Unique index for idempotent ETL using COALESCE for NULL safety
+-- Unique index for idempotent ETL using float_id, timestamp, and COALESCE pressure_dbar
+-- (timestamp is unique per surfacing cycle, handling floats even when cycle_number is NULL)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_uq_profile_level 
-    ON argo_profiles (float_id, COALESCE(cycle_number, -1), COALESCE(pressure_dbar, -1.0));
+    ON argo_profiles (float_id, timestamp, COALESCE(pressure_dbar, -1.0));
 
 -- Indexes for spatial, temporal, and depth query patterns
 CREATE INDEX IF NOT EXISTS idx_float_id         ON argo_profiles (float_id);

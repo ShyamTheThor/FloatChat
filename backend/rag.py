@@ -11,7 +11,11 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from openai import OpenAI
 
@@ -19,8 +23,13 @@ from backend.schemas.query import QueryIntent, RegionBounds, AnalyticsSummary
 from backend.queries import query_composite, get_dataset_metadata
 from backend.services.analytics import compute_analytics
 from backend.vector_store import init_vector_store, search_metadata
+from backend.planner import parse_intent_deterministic
 
 MODEL = "openai/gpt-oss-120b"
+
+def is_demo_mode() -> bool:
+    """Check if DEMO MODE is explicitly activated."""
+    return os.getenv("DEMO_MODE", "false").lower() in ("true", "1", "yes")
 
 SYSTEM_PROMPT = """You are FloatChat, an AI assistant for oceanographers querying ARGO ocean float data in the Indian Ocean.
 
@@ -83,13 +92,16 @@ def process_chat_query(user_message: str) -> dict[str, Any]:
     Full RAG pipeline:
     1. Search ChromaDB for relevant domain context (region bounding boxes, parameters).
     2. Retrieve dataset coverage from PostgreSQL.
-    3. Prompt LLM (Groq) to return structured QueryIntent JSON.
+    3. Prompt LLM (Groq) or fallback to deterministic planner for structured QueryIntent.
     4. Validate intent with Pydantic.
     5. Execute parameterized SQL query against PostgreSQL.
     6. Compute server-side analytics.
-    7. Generate LLM summary response.
+    7. Generate LLM summary response (or deterministic summary).
     8. Return response payload.
     """
+    if not user_message or not user_message.strip():
+        user_message = "Show floats in Indian Ocean"
+
     # Ensure vector store is initialized
     init_vector_store()
 
@@ -100,42 +112,41 @@ def process_chat_query(user_message: str) -> dict[str, Any]:
     context_docs = search_metadata(user_message, n_results=3)
     context_text = "\n".join([c["text"] for c in context_docs])
 
-    # Step 3: LLM Intent Parsing
-    client = get_llm_client()
-    query_messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": (
-                f"Dataset Coverage: Earliest={dataset_meta.get('earliest_date')}, Latest={dataset_meta.get('latest_date')}, Total Floats={dataset_meta.get('total_floats')}\n\n"
-                f"Context from knowledge base:\n{context_text}\n\n"
-                f"User question: {user_message}"
-            ),
-        },
-    ]
+    # Step 3: Intent Parsing (Live LLM with deterministic planner fallback / DEMO MODE)
+    intent: Optional[QueryIntent] = None
 
-    routing_response = client.chat.completions.create(
-        model=MODEL,
-        messages=query_messages,
-        response_format={"type": "json_object"},
-        temperature=0.1,
-    )
+    if is_demo_mode():
+        print(f"[RAG] Running in DEMO MODE: using deterministic semantic planner.")
+        intent = parse_intent_deterministic(user_message)
+    else:
+        try:
+            client = get_llm_client()
+            query_messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Dataset Coverage: Earliest={dataset_meta.get('earliest_date')}, Latest={dataset_meta.get('latest_date')}, Total Floats={dataset_meta.get('total_floats')}\n\n"
+                        f"Context from knowledge base:\n{context_text}\n\n"
+                        f"User question: {user_message}"
+                    ),
+                },
+            ]
 
-    raw_json = routing_response.choices[0].message.content.strip()
-    print(f"[RAG] Raw LLM intent response: {raw_json}")
+            routing_response = client.chat.completions.create(
+                model=MODEL,
+                messages=query_messages,
+                response_format={"type": "json_object"},
+                temperature=0.1,
+            )
 
-    try:
-        raw_dict = json.loads(raw_json)
-        intent = QueryIntent.model_validate(raw_dict)
-    except Exception as e:
-        print(f"[RAG] Pydantic validation fallback due to: {e}")
-        # Default fallback intent
-        intent = QueryIntent(
-            query_type="composite",
-            parameter="all",
-            visualization="map",
-            region=RegionBounds(min_lat=-10.0, max_lat=25.0, min_lon=40.0, max_lon=105.0, region_name="Indian Ocean"),
-        )
+            raw_json = routing_response.choices[0].message.content.strip()
+            print(f"[RAG] Raw LLM intent response: {raw_json}")
+            raw_dict = json.loads(raw_json)
+            intent = QueryIntent.model_validate(raw_dict)
+        except Exception as e:
+            print(f"[RAG] LLM parsing unavailable or validation fallback ({e}). Using deterministic planner.")
+            intent = parse_intent_deterministic(user_message)
 
     # Auto-bind default dates to dataset coverage if unspecified
     start_date = intent.start_date
@@ -209,17 +220,46 @@ def process_chat_query(user_message: str) -> dict[str, Any]:
         },
     ]
 
-    try:
-        summary_response = client.chat.completions.create(
-            model=MODEL,
-            messages=summary_messages,
-            temperature=0.4,
-        )
-        answer = summary_response.choices[0].message.content.strip()
-    except Exception as e:
+    answer = None
+    if not is_demo_mode():
+        try:
+            client = get_llm_client()
+            summary_messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are FloatChat, an expert ocean science assistant. "
+                        "Provide a clear, professional 2-3 sentence summary of the ARGO observation results. "
+                        "Highlight observation counts, float count, depth range, and key metric averages (temperature/salinity)."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"User Question: \"{user_message}\"\n"
+                        f"Query Intent: {intent.model_dump()}\n"
+                        f"Analytics Summary: {analytics.model_dump()}\n"
+                        f"Sample Observation: {data[0] if data else {}}"
+                    ),
+                },
+            ]
+            summary_response = client.chat.completions.create(
+                model=MODEL,
+                messages=summary_messages,
+                temperature=0.4,
+            )
+            answer = summary_response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"[RAG] Summary generation LLM fallback due to: {e}")
+
+    if not answer:
+        reg_name = intent.region.region_name if intent.region else "the selected ocean region"
+        depth_info = f" spanning depths from {analytics.depth_min} m to {analytics.depth_max} m" if analytics.depth_min is not None else ""
+        temp_info = f" Mean temperature is {analytics.temp_mean} °C (range: {analytics.temp_min}–{analytics.temp_max} °C)." if analytics.temp_mean is not None else ""
+        sal_info = f" Mean practical salinity is {analytics.sal_mean} psu (range: {analytics.sal_min}–{analytics.sal_max} psu)." if analytics.sal_mean is not None else ""
         answer = (
-            f"Retrieved {analytics.observation_count} ARGO observations across {analytics.float_count} floats "
-            f"in the {intent.region.region_name if intent.region else 'specified area'}."
+            f"Retrieved {analytics.observation_count:,} ARGO observations across {analytics.float_count} unique floats in {reg_name}{depth_info}."
+            f"{temp_info}{sal_info}"
         )
 
     return {

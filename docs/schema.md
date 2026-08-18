@@ -17,11 +17,11 @@ One row = one observation at one depth level from one float cycle.
 |---|---|---|---|
 | `id` | `BIGSERIAL` | PRIMARY KEY | Internal surrogate key |
 | `float_id` | `VARCHAR(20)` | NOT NULL, INDEXED | ARGO platform ID (e.g. `"2902275"`) |
-| `cycle_number` | `INTEGER` | NOT NULL | Dive cycle number for this float |
-| `lat` | `DOUBLE PRECISION` | NOT NULL | Latitude in decimal degrees (−90 to +90, N positive) |
-| `lon` | `DOUBLE PRECISION` | NOT NULL | Longitude in decimal degrees (−180 to +180, E positive) |
+| `cycle_number` | `INTEGER` | nullable | Dive cycle number — nullable because some Argovis `_id` fields lack a parseable cycle |
+| `lat` | `DOUBLE PRECISION` | NOT NULL, CHECK −90…90 | Latitude in decimal degrees (N positive) |
+| `lon` | `DOUBLE PRECISION` | NOT NULL, CHECK −180…180 | Longitude in decimal degrees (E positive) |
 | `timestamp` | `TIMESTAMPTZ` | NOT NULL, INDEXED | UTC datetime of profile observation |
-| `pressure_dbar` | `REAL` | — | Pressure in decibars at this level (≈depth in m) |
+| `pressure_dbar` | `REAL` | CHECK ≥ 0 | Pressure in decibars at this level (≈depth in m) |
 | `depth_m` | `REAL` | — | Depth in metres, derived from pressure + latitude |
 | `temperature` | `REAL` | — | In-situ temperature in °C (NULL if bad/missing) |
 | `salinity` | `REAL` | — | Practical salinity in psu (NULL if bad/missing) |
@@ -32,11 +32,14 @@ One row = one observation at one depth level from one float cycle.
 
 ### Uniqueness Constraint
 
+Uses COALESCE sentinel values to handle NULLs (PostgreSQL `UNIQUE` treats NULLs as distinct):
+
 ```sql
-UNIQUE (float_id, cycle_number, pressure_dbar)
+CREATE UNIQUE INDEX idx_uq_profile_level
+    ON argo_profiles (float_id, COALESCE(cycle_number, -1), COALESCE(pressure_dbar, -1.0));
 ```
 
-This allows safe re-runs (`ON CONFLICT DO NOTHING`) without duplicate rows.
+This allows safe re-runs (`ON CONFLICT DO NOTHING`) without duplicate rows, even when `cycle_number` or `pressure_dbar` are NULL.
 
 ---
 
@@ -70,30 +73,9 @@ These are stored in the table but may be NULL for some sources.
 
 ## Full SQL DDL
 
-```sql
-CREATE TABLE IF NOT EXISTS argo_profiles (
-    id                BIGSERIAL        PRIMARY KEY,
-    float_id          VARCHAR(20)      NOT NULL,
-    cycle_number      INTEGER          NOT NULL,
-    lat               DOUBLE PRECISION NOT NULL,
-    lon               DOUBLE PRECISION NOT NULL,
-    timestamp         TIMESTAMPTZ      NOT NULL,
-    pressure_dbar     REAL,
-    depth_m           REAL,
-    temperature       REAL,
-    salinity          REAL,
-    basin             INTEGER,
-    profile_direction CHAR(1),
-    data_mode         CHAR(1),
-    source_url        TEXT,
-    CONSTRAINT uq_profile_level UNIQUE (float_id, cycle_number, pressure_dbar)
-);
-
-CREATE INDEX IF NOT EXISTS idx_float_id  ON argo_profiles (float_id);
-CREATE INDEX IF NOT EXISTS idx_timestamp ON argo_profiles (timestamp);
-CREATE INDEX IF NOT EXISTS idx_lat_lon   ON argo_profiles (lat, lon);
-CREATE INDEX IF NOT EXISTS idx_depth     ON argo_profiles (depth_m);
-```
+See [create_tables.sql](file:///Users/apple/Desktop/OCEAN/backend/create_tables.sql) for the authoritative DDL.
+Key features: CHECK constraints on coordinates/measurements, COALESCE-based unique index,
+and composite indexes for spatial/temporal/depth queries.
 
 ---
 

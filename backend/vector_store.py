@@ -62,46 +62,53 @@ def get_chroma_client():
 
 def init_vector_store():
     """Initialize the ChromaDB collection and load metadata if it doesn't exist."""
-    client = get_chroma_client()
-    collection = client.get_or_create_collection(name=COLLECTION_NAME)
-    
-    # Check if we need to insert data
-    if collection.count() == 0:
-        print(f"Initializing Vector DB in {CHROMA_DB_DIR}...")
-        ids = [doc["id"] for doc in METADATA_DOCUMENTS]
-        texts = [doc["text"] for doc in METADATA_DOCUMENTS]
-        metadatas = [doc["metadata"] for doc in METADATA_DOCUMENTS]
+    try:
+        client = get_chroma_client()
+        collection = client.get_or_create_collection(name=COLLECTION_NAME)
         
-        collection.add(
-            ids=ids,
-            documents=texts,
-            metadatas=metadatas
-        )
-        print(f"Inserted {len(METADATA_DOCUMENTS)} metadata documents into ChromaDB.")
-    else:
-        print(f"Vector DB already initialized with {collection.count()} documents.")
+        # Check if we need to insert data
+        if collection.count() == 0:
+            print(f"Initializing Vector DB in {CHROMA_DB_DIR}...")
+            ids = [doc["id"] for doc in METADATA_DOCUMENTS]
+            texts = [doc["text"] for doc in METADATA_DOCUMENTS]
+            metadatas = [doc["metadata"] for doc in METADATA_DOCUMENTS]
+            
+            collection.add(
+                ids=ids,
+                documents=texts,
+                metadatas=metadatas
+            )
+            print(f"Inserted {len(METADATA_DOCUMENTS)} metadata documents into ChromaDB.")
+        else:
+            print(f"Vector DB already initialized with {collection.count()} documents.")
+    except Exception as e:
+        print(f"[vector_store.py] Warning: Vector store init deferred/failed: {e}")
 
 def search_metadata(query: str, n_results: int = 2) -> list[dict]:
     """
     Search the metadata collection for context relevant to the query.
     Returns a list of dicts with 'text' and 'metadata'.
     """
-    client = get_chroma_client()
-    collection = client.get_collection(name=COLLECTION_NAME)
-    
-    results = collection.query(
-        query_texts=[query],
-        n_results=n_results
-    )
-    
-    context = []
-    if results and "documents" in results and results["documents"]:
-        for idx in range(len(results["documents"][0])):
-            context.append({
-                "text": results["documents"][0][idx],
-                "metadata": results["metadatas"][0][idx]
-            })
-    return context
+    try:
+        client = get_chroma_client()
+        collection = client.get_collection(name=COLLECTION_NAME)
+        
+        results = collection.query(
+            query_texts=[query],
+            n_results=n_results
+        )
+        
+        context = []
+        if results and "documents" in results and results["documents"]:
+            for idx in range(len(results["documents"][0])):
+                context.append({
+                    "text": results["documents"][0][idx],
+                    "metadata": results["metadatas"][0][idx]
+                })
+        return context
+    except Exception as e:
+        print(f"[vector_store.py] Warning: Metadata search failed: {e}")
+        return []
 
 if __name__ == "__main__":
     # Test initialization

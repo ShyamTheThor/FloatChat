@@ -47,6 +47,34 @@ class QueryIntent(BaseModel):
     depth_tolerance: Optional[float] = Field(default=15.0, ge=1.0, le=500.0)
     float_id: Optional[str] = None
 
+    @field_validator("start_date", "end_date")
+    @classmethod
+    def validate_date_format(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v_str = str(v).strip()
+        # Accept YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS
+        import re
+        from datetime import datetime
+        date_pattern = r"^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?$"
+        if not re.match(date_pattern, v_str):
+            raise ValueError(f"Invalid date format: '{v_str}'. Expected YYYY-MM-DD.")
+        try:
+            # Verify valid calendar date
+            base_date = v_str[:10]
+            datetime.strptime(base_date, "%Y-%m-%d")
+        except ValueError:
+            raise ValueError(f"Invalid calendar date: '{v_str}'")
+        return base_date
+
+    @field_validator("end_date")
+    @classmethod
+    def validate_date_range(cls, v: Optional[str], info) -> Optional[str]:
+        start_date = info.data.get("start_date")
+        if v is not None and start_date is not None and v < start_date:
+            raise ValueError("end_date cannot be earlier than start_date")
+        return v
+
     @field_validator("max_depth")
     @classmethod
     def validate_depth(cls, v: Optional[float], info) -> Optional[float]:

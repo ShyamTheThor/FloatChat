@@ -39,7 +39,7 @@ def _pressure_to_depth(pressure_dbar: float, lat: float) -> float:
         - Expected accuracy: +/- 0.5% for ocean depth range 0 - 7000 m.
     """
     if pressure_dbar is None or pressure_dbar < 0:
-        return 0.0
+        return None
     sin2_lat = math.sin(math.radians(lat)) ** 2
     correction = 1.0 + 5.25e-3 * sin2_lat
     return round(pressure_dbar * 0.9927 * correction, 3)
